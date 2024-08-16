@@ -19,9 +19,9 @@ public class UserAnswerAddRequest implements Serializable {
     private Long appId;
 
     /**
-     * 应用类型（0-得分类，1-角色测评类）
+     * 用户答案（JSON 数组）
      */
-    private Integer appType;
+    private List<String> choices;
 
     private static final long serialVersionUID = 1L;
 }

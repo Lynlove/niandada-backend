@@ -1,5 +1,6 @@
 package com.lyn.niandada.controller;
 
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lyn.niandada.annotation.AuthCheck;
 import com.lyn.niandada.common.BaseResponse;
@@ -13,9 +14,13 @@ import com.lyn.niandada.model.dto.userAnswer.UserAnswerAddRequest;
 import com.lyn.niandada.model.dto.userAnswer.UserAnswerEditRequest;
 import com.lyn.niandada.model.dto.userAnswer.UserAnswerQueryRequest;
 import com.lyn.niandada.model.dto.userAnswer.UserAnswerUpdateRequest;
+import com.lyn.niandada.model.entity.App;
 import com.lyn.niandada.model.entity.UserAnswer;
 import com.lyn.niandada.model.entity.User;
+import com.lyn.niandada.model.enums.ReviewStatusEnum;
 import com.lyn.niandada.model.vo.UserAnswerVO;
+import com.lyn.niandada.scoring.ScoringStrategyExecutor;
+import com.lyn.niandada.service.AppService;
 import com.lyn.niandada.service.UserAnswerService;
 import com.lyn.niandada.service.UserService;
 import lombok.extern.slf4j.Slf4j;
@@ -24,11 +29,10 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
+import java.util.List;
 
 /**
  * 用户答题记录接口
- *
-
  */
 @RestController
 @RequestMapping("/userAnswer")
@@ -40,6 +44,12 @@ public class UserAnswerController {
 
     @Resource
     private UserService userService;
+
+    @Resource
+    private AppService appService;
+
+    @Resource
+    private ScoringStrategyExecutor scoringStrategyExecutor;
 
     // region 增删改查
 
@@ -53,19 +63,42 @@ public class UserAnswerController {
     @PostMapping("/add")
     public BaseResponse<Long> addUserAnswer(@RequestBody UserAnswerAddRequest userAnswerAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(userAnswerAddRequest == null, ErrorCode.PARAMS_ERROR);
-        // todo 在此处将实体类和 DTO 进行转换
+        // 在此处将实体类和 DTO 进行转换
         UserAnswer userAnswer = new UserAnswer();
         BeanUtils.copyProperties(userAnswerAddRequest, userAnswer);
+        List<String> choices = userAnswerAddRequest.getChoices();
+        userAnswer.setChoices(JSONUtil.toJsonStr(choices));
         // 数据校验
         userAnswerService.validUserAnswer(userAnswer, true);
-        // todo 填充默认值
+        // 判断app是否存在
+        Long appId = userAnswerAddRequest.getAppId();
+        App app = appService.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR);
+        if (!ReviewStatusEnum.PASS.equals(ReviewStatusEnum.getEnumByValue(app.getReviewStatus()))) {
+            throw new BusinessException(ErrorCode.FORBIDDEN_ERROR, "该应用未通过审核");
+        }
+
+        // 填充默认值
         User loginUser = userService.getLoginUser(request);
         userAnswer.setUserId(loginUser.getId());
+
         // 写入数据库
         boolean result = userAnswerService.save(userAnswer);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
         // 返回新写入的数据 id
         long newUserAnswerId = userAnswer.getId();
+
+
+        // 调用评分模块
+        try {
+            UserAnswer userAnswerWithResult = scoringStrategyExecutor.doScore(choices, app);
+            userAnswerWithResult.setId(newUserAnswerId);
+            userAnswerService.updateById(userAnswerWithResult);
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "评分错误");
+        }
+
         return ResultUtils.success(newUserAnswerId);
     }
 
@@ -108,9 +141,11 @@ public class UserAnswerController {
         if (userAnswerUpdateRequest == null || userAnswerUpdateRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        // todo 在此处将实体类和 DTO 进行转换
+        // 在此处将实体类和 DTO 进行转换
         UserAnswer userAnswer = new UserAnswer();
         BeanUtils.copyProperties(userAnswerUpdateRequest, userAnswer);
+        List<String> choices = userAnswerUpdateRequest.getChoices();
+        userAnswer.setChoices(JSONUtil.toJsonStr(choices));
         // 数据校验
         userAnswerService.validUserAnswer(userAnswer, false);
         // 判断是否存在
@@ -165,7 +200,7 @@ public class UserAnswerController {
      */
     @PostMapping("/list/page/vo")
     public BaseResponse<Page<UserAnswerVO>> listUserAnswerVOByPage(@RequestBody UserAnswerQueryRequest userAnswerQueryRequest,
-                                                               HttpServletRequest request) {
+                                                                   HttpServletRequest request) {
         long current = userAnswerQueryRequest.getCurrent();
         long size = userAnswerQueryRequest.getPageSize();
         // 限制爬虫
@@ -186,7 +221,7 @@ public class UserAnswerController {
      */
     @PostMapping("/my/list/page/vo")
     public BaseResponse<Page<UserAnswerVO>> listMyUserAnswerVOByPage(@RequestBody UserAnswerQueryRequest userAnswerQueryRequest,
-                                                                 HttpServletRequest request) {
+                                                                     HttpServletRequest request) {
         ThrowUtils.throwIf(userAnswerQueryRequest == null, ErrorCode.PARAMS_ERROR);
         // 补充查询条件，只查询当前登录用户的数据
         User loginUser = userService.getLoginUser(request);
@@ -214,9 +249,11 @@ public class UserAnswerController {
         if (userAnswerEditRequest == null || userAnswerEditRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        // todo 在此处将实体类和 DTO 进行转换
+        // 在此处将实体类和 DTO 进行转换
         UserAnswer userAnswer = new UserAnswer();
         BeanUtils.copyProperties(userAnswerEditRequest, userAnswer);
+        List<String> choices = userAnswerEditRequest.getChoices();
+        userAnswer.setChoices(JSONUtil.toJsonStr(choices));
         // 数据校验
         userAnswerService.validUserAnswer(userAnswer, false);
         User loginUser = userService.getLoginUser(request);
